@@ -148,6 +148,47 @@ class RepoIndexer:
             "chunks_indexed": len(all_docs),
         }
 
+    def delete_repo(self, repo_name: str) -> int:
+        """Remove every chunk for repo_name from both ChromaDB and the BM25
+        index. Returns how many chunks were removed (0 means nothing was
+        indexed under that name — the caller can treat that as "not found").
+
+        Unlike ingest()'s internal _delete_repo() (which is just step one of
+        a re-index, immediately followed by writing fresh chunks back in),
+        this is deletion as the end goal: nothing gets written back."""
+        try:
+            existing = self.collection.get(where={"repo": repo_name})
+            deleted_count = len(existing.get("ids", []))
+        except Exception:
+            deleted_count = 0
+
+        if deleted_count == 0:
+            return 0
+
+        self._delete_repo(repo_name)
+        self._remove_from_bm25_index(repo_name)
+        return deleted_count
+
+    def _remove_from_bm25_index(self, repo_name: str) -> None:
+        """Rebuild the BM25 pickle without repo_name's chunks. Same
+        rebuild-from-scratch approach as _update_bm25_index() (BM25Okapi has
+        no incremental API) — the difference is nothing new is merged back
+        in, and if that was the last repo indexed, the pickle file is
+        removed entirely rather than left holding an index over zero
+        documents (BM25Okapi errors on an empty corpus)."""
+        existing = self._load_bm25_state()
+        kept = [d for d in existing.get("docs", []) if d["metadata"].get("repo") != repo_name]
+
+        if not kept:
+            if os.path.exists(settings.bm25_index_path):
+                os.remove(settings.bm25_index_path)
+            return
+
+        tokenized_corpus = [_tokenize(d["text"]) for d in kept]
+        bm25 = BM25Okapi(tokenized_corpus)
+        with open(settings.bm25_index_path, "wb") as f:
+            pickle.dump({"bm25": bm25, "docs": kept}, f)
+
     def _delete_repo(self, repo_name: str) -> None:
         """Remove every chunk currently indexed under this repo name from
         ChromaDB, so a re-ingest starts clean rather than accumulating stale

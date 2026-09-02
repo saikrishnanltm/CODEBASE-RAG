@@ -196,6 +196,22 @@ def ingest_status(job_id: str):
     )
 
 
+class DeleteRepoResponse(BaseModel):
+    repo: str
+    chunks_deleted: int
+
+
+@app.delete("/repos/{repo_name}", response_model=DeleteRepoResponse)
+def delete_repo(repo_name: str):
+    """Remove a previously-ingested repo from both the vector store and the
+    BM25 index. Fast (no embedding work involved), so this runs inline
+    rather than as a background job — unlike /ingest."""
+    deleted_count = _get_indexer().delete_repo(repo_name)
+    if deleted_count == 0:
+        raise HTTPException(404, f"No indexed chunks found for repo '{repo_name}'")
+    return DeleteRepoResponse(repo=repo_name, chunks_deleted=deleted_count)
+
+
 @app.post("/query", response_model=QueryResponse)
 def query(req: QueryRequest):
     if not req.question.strip():
